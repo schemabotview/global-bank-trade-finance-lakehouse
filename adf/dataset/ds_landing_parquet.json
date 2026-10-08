@@ -1,0 +1,16 @@
+{
+  "name": "ds_landing_parquet",
+  "properties": {
+    "type": "Parquet",
+    "linkedServiceName": { "referenceName": "ls_adls", "type": "LinkedServiceReference" },
+    "parameters": { "folder_path": { "type": "string" } },
+    "typeProperties": {
+      "location": {
+        "type": "AzureBlobFSLocation",
+        "fileSystem": "landing",
+        "folderPath": { "value": "@dataset().folder_path", "type": "Expression" }
+      },
+      "compressionCodec": "snappy"
+    }
+  }
+}

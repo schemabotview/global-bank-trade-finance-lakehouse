@@ -1,0 +1,4 @@
+subscription_id     = "00000000-0000-0000-0000-000000000000"
+location            = "uksouth"
+environment         = "dev"
+client_ip_addresses = ["203.0.113.10"] # your public IP, to run the data generator

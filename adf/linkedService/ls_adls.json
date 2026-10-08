@@ -1,0 +1,9 @@
+{
+  "name": "ls_adls",
+  "properties": {
+    "type": "AzureBlobFS",
+    "typeProperties": {
+      "url": "https://__STORAGE_ACCOUNT__.dfs.core.windows.net"
+    }
+  }
+}

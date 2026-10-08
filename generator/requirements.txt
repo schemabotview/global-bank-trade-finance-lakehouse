@@ -1,0 +1,1 @@
+pyodbc>=5.0   # only for --target sql (also needs Microsoft ODBC Driver 18)
