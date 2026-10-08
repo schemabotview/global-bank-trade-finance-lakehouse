@@ -6,7 +6,9 @@ resource "random_string" "suffix" {
   special = false
 }
 
+# Only needed when this module provisions its own Azure SQL server.
 resource "random_password" "sql_admin" {
+  count            = local.create_sql ? 1 : 0
   length           = 24
   special          = true
   override_special = "!#%*-_"
@@ -17,26 +19,45 @@ locals {
   flat   = "${var.project}${var.environment}"
   suffix = random_string.suffix.result
 
+  # Governed subscriptions commonly vend resources to app teams rather than granting
+  # subscription-scope write. Every `*_name` variable below follows the same contract:
+  # empty => this module creates the resource; set => it adopts the existing one.
+  create_rg  = var.resource_group_name == ""
+  create_sa  = var.storage_account_name == ""
+  create_sql = var.sql_server_name == ""
+  create_dbx = var.databricks_workspace_name == ""
+
   tags = merge({
     project     = var.project
     environment = var.environment
     managed_by  = "terraform"
   }, var.tags)
-
-  sql_connection_string = "Server=tcp:${azurerm_mssql_server.this.fully_qualified_domain_name},1433;Database=${azurerm_mssql_database.source.name};User ID=${var.sql_admin_login};Password=${random_password.sql_admin.result};Encrypt=true;TrustServerCertificate=false;Connection Timeout=30;"
 }
 
+# ---------------------------------------------------------------- Resource group
 resource "azurerm_resource_group" "this" {
+  count    = local.create_rg ? 1 : 0
   name     = "rg-${local.base}"
   location = var.location
   tags     = local.tags
 }
 
+data "azurerm_resource_group" "existing" {
+  count = local.create_rg ? 0 : 1
+  name  = var.resource_group_name
+}
+
+locals {
+  rg_name     = local.create_rg ? azurerm_resource_group.this[0].name : data.azurerm_resource_group.existing[0].name
+  rg_location = local.create_rg ? azurerm_resource_group.this[0].location : data.azurerm_resource_group.existing[0].location
+}
+
 # ---------------------------------------------------------------- ADLS Gen2
 resource "azurerm_storage_account" "lake" {
+  count                           = local.create_sa ? 1 : 0
   name                            = substr("st${local.flat}${local.suffix}", 0, 24)
-  resource_group_name             = azurerm_resource_group.this.name
-  location                        = azurerm_resource_group.this.location
+  resource_group_name             = local.rg_name
+  location                        = local.rg_location
   account_tier                    = "Standard"
   account_replication_type        = "LRS"
   account_kind                    = "StorageV2"
@@ -46,22 +67,37 @@ resource "azurerm_storage_account" "lake" {
   tags                            = local.tags
 }
 
-# landing = raw Parquet written by ADF; lakehouse = Unity Catalog managed storage (bronze/silver/gold Delta)
+data "azurerm_storage_account" "existing" {
+  count               = local.create_sa ? 0 : 1
+  name                = var.storage_account_name
+  resource_group_name = local.rg_name
+}
+
+# landing = raw Parquet written by ADF; lakehouse = Unity Catalog managed storage.
+# Only managed here when this module owns the account — an adopted account is expected
+# to already carry both containers (and the Unity Catalog storage credential over them).
 resource "azurerm_storage_data_lake_gen2_filesystem" "landing" {
+  count              = local.create_sa ? 1 : 0
   name               = "landing"
-  storage_account_id = azurerm_storage_account.lake.id
+  storage_account_id = azurerm_storage_account.lake[0].id
 }
 
 resource "azurerm_storage_data_lake_gen2_filesystem" "lakehouse" {
+  count              = local.create_sa ? 1 : 0
   name               = "lakehouse"
-  storage_account_id = azurerm_storage_account.lake.id
+  storage_account_id = azurerm_storage_account.lake[0].id
+}
+
+locals {
+  sa_name = local.create_sa ? azurerm_storage_account.lake[0].name : data.azurerm_storage_account.existing[0].name
+  sa_id   = local.create_sa ? azurerm_storage_account.lake[0].id : data.azurerm_storage_account.existing[0].id
 }
 
 # ---------------------------------------------------------------- Key Vault
 resource "azurerm_key_vault" "this" {
   name                       = substr("kv-${local.base}-${local.suffix}", 0, 24)
-  resource_group_name        = azurerm_resource_group.this.name
-  location                   = azurerm_resource_group.this.location
+  resource_group_name        = local.rg_name
+  location                   = local.rg_location
   tenant_id                  = data.azurerm_client_config.current.tenant_id
   sku_name                   = "standard"
   rbac_authorization_enabled = true
@@ -76,9 +112,68 @@ resource "azurerm_role_assignment" "kv_deployer" {
   principal_id         = data.azurerm_client_config.current.object_id
 }
 
+# ---------------------------------------------------------------- Azure SQL (synthetic source)
+resource "azurerm_mssql_server" "this" {
+  count                        = local.create_sql ? 1 : 0
+  name                         = "sql-${local.base}-${local.suffix}"
+  resource_group_name          = local.rg_name
+  location                     = local.rg_location
+  version                      = "12.0"
+  administrator_login          = var.sql_admin_login
+  administrator_login_password = random_password.sql_admin[0].result
+  minimum_tls_version          = "1.2"
+  tags                         = local.tags
+}
+
+data "azurerm_mssql_server" "existing" {
+  count               = local.create_sql ? 0 : 1
+  name                = var.sql_server_name
+  resource_group_name = local.rg_name
+}
+
+resource "azurerm_mssql_database" "source" {
+  count                       = local.create_sql ? 1 : 0
+  name                        = var.sql_database_name
+  server_id                   = azurerm_mssql_server.this[0].id
+  sku_name                    = var.sql_database_sku
+  max_size_gb                 = 5
+  min_capacity                = startswith(var.sql_database_sku, "GP_S") ? 0.5 : null
+  auto_pause_delay_in_minutes = startswith(var.sql_database_sku, "GP_S") ? 60 : null
+  zone_redundant              = false
+  tags                        = local.tags
+}
+
+# Firewall is only managed on a server this module owns — an adopted (often shared)
+# server's rules belong to whoever owns it.
+resource "azurerm_mssql_firewall_rule" "azure_services" {
+  count            = local.create_sql ? 1 : 0
+  name             = "AllowAzureServices"
+  server_id        = azurerm_mssql_server.this[0].id
+  start_ip_address = "0.0.0.0"
+  end_ip_address   = "0.0.0.0"
+}
+
+resource "azurerm_mssql_firewall_rule" "clients" {
+  count            = local.create_sql ? length(var.client_ip_addresses) : 0
+  name             = "client-${count.index}"
+  server_id        = azurerm_mssql_server.this[0].id
+  start_ip_address = var.client_ip_addresses[count.index]
+  end_ip_address   = var.client_ip_addresses[count.index]
+}
+
+locals {
+  sql_fqdn     = local.create_sql ? azurerm_mssql_server.this[0].fully_qualified_domain_name : data.azurerm_mssql_server.existing[0].fully_qualified_domain_name
+  sql_db       = local.create_sql ? azurerm_mssql_database.source[0].name : var.sql_database_name
+  sql_password = local.create_sql ? random_password.sql_admin[0].result : var.sql_admin_password
+
+  sql_connection_string = "Server=tcp:${local.sql_fqdn},1433;Database=${local.sql_db};User ID=${var.sql_admin_login};Password=${local.sql_password};Encrypt=true;TrustServerCertificate=false;Connection Timeout=30;"
+  sql_jdbc_url          = "jdbc:sqlserver://${local.sql_fqdn}:1433;database=${local.sql_db};encrypt=true;trustServerCertificate=false"
+}
+
+# ---------------------------------------------------------------- Key Vault secrets
 resource "azurerm_key_vault_secret" "sql_admin_password" {
   name         = "sql-admin-password"
-  value        = random_password.sql_admin.result
+  value        = local.sql_password
   key_vault_id = azurerm_key_vault.this.id
   depends_on   = [azurerm_role_assignment.kv_deployer]
 }
@@ -90,50 +185,25 @@ resource "azurerm_key_vault_secret" "sql_connection_string" {
   depends_on   = [azurerm_role_assignment.kv_deployer]
 }
 
-# ---------------------------------------------------------------- Azure SQL (synthetic source)
-resource "azurerm_mssql_server" "this" {
-  name                         = "sql-${local.base}-${local.suffix}"
-  resource_group_name          = azurerm_resource_group.this.name
-  location                     = azurerm_resource_group.this.location
-  version                      = "12.0"
-  administrator_login          = var.sql_admin_login
-  administrator_login_password = random_password.sql_admin.result
-  minimum_tls_version          = "1.2"
-  tags                         = local.tags
+resource "azurerm_key_vault_secret" "sql_admin_login" {
+  name         = "sql-admin-login"
+  value        = var.sql_admin_login
+  key_vault_id = azurerm_key_vault.this.id
+  depends_on   = [azurerm_role_assignment.kv_deployer]
 }
 
-resource "azurerm_mssql_database" "source" {
-  name                        = "tradefin_source"
-  server_id                   = azurerm_mssql_server.this.id
-  sku_name                    = var.sql_database_sku
-  max_size_gb                 = 5
-  min_capacity                = startswith(var.sql_database_sku, "GP_S") ? 0.5 : null
-  auto_pause_delay_in_minutes = startswith(var.sql_database_sku, "GP_S") ? 60 : null
-  zone_redundant              = false
-  tags                        = local.tags
-}
-
-# Allows ADF / Azure services (0.0.0.0). Tighten with private endpoints for non-dev.
-resource "azurerm_mssql_firewall_rule" "azure_services" {
-  name             = "AllowAzureServices"
-  server_id        = azurerm_mssql_server.this.id
-  start_ip_address = "0.0.0.0"
-  end_ip_address   = "0.0.0.0"
-}
-
-resource "azurerm_mssql_firewall_rule" "clients" {
-  count            = length(var.client_ip_addresses)
-  name             = "client-${count.index}"
-  server_id        = azurerm_mssql_server.this.id
-  start_ip_address = var.client_ip_addresses[count.index]
-  end_ip_address   = var.client_ip_addresses[count.index]
+resource "azurerm_key_vault_secret" "sql_jdbc_url" {
+  name         = "sql-jdbc-url"
+  value        = local.sql_jdbc_url
+  key_vault_id = azurerm_key_vault.this.id
+  depends_on   = [azurerm_role_assignment.kv_deployer]
 }
 
 # ---------------------------------------------------------------- Data Factory
 resource "azurerm_data_factory" "this" {
   name                = "adf-${local.base}-${local.suffix}"
-  resource_group_name = azurerm_resource_group.this.name
-  location            = azurerm_resource_group.this.location
+  resource_group_name = local.rg_name
+  location            = local.rg_location
   tags                = local.tags
 
   identity {
@@ -142,7 +212,7 @@ resource "azurerm_data_factory" "this" {
 }
 
 resource "azurerm_role_assignment" "adf_storage" {
-  scope                = azurerm_storage_account.lake.id
+  scope                = local.sa_id
   role_definition_name = "Storage Blob Data Contributor"
   principal_id         = azurerm_data_factory.this.identity[0].principal_id
 }
@@ -155,18 +225,27 @@ resource "azurerm_role_assignment" "adf_keyvault" {
 
 # ---------------------------------------------------------------- Databricks
 resource "azurerm_databricks_workspace" "this" {
+  count               = local.create_dbx ? 1 : 0
   name                = "dbw-${local.base}-${local.suffix}"
-  resource_group_name = azurerm_resource_group.this.name
-  location            = azurerm_resource_group.this.location
+  resource_group_name = local.rg_name
+  location            = local.rg_location
   sku                 = var.databricks_sku
   tags                = local.tags
 }
 
-# Identity that Unity Catalog uses (as a storage credential) to reach ADLS.
+data "azurerm_databricks_workspace" "existing" {
+  count               = local.create_dbx ? 0 : 1
+  name                = var.databricks_workspace_name
+  resource_group_name = local.rg_name
+}
+
+# Identity Unity Catalog uses (as a storage credential) to reach ADLS. Only created
+# alongside a workspace this module owns; an adopted workspace brings its own.
 resource "azurerm_databricks_access_connector" "uc" {
+  count               = local.create_dbx ? 1 : 0
   name                = "dbac-${local.base}"
-  resource_group_name = azurerm_resource_group.this.name
-  location            = azurerm_resource_group.this.location
+  resource_group_name = local.rg_name
+  location            = local.rg_location
   tags                = local.tags
 
   identity {
@@ -175,22 +254,8 @@ resource "azurerm_databricks_access_connector" "uc" {
 }
 
 resource "azurerm_role_assignment" "uc_storage" {
-  scope                = azurerm_storage_account.lake.id
+  count                = local.create_dbx ? 1 : 0
+  scope                = local.sa_id
   role_definition_name = "Storage Blob Data Contributor"
-  principal_id         = azurerm_databricks_access_connector.uc.identity[0].principal_id
-}
-
-# Secrets read by Databricks (via a Key Vault-backed secret scope) for source reconciliation.
-resource "azurerm_key_vault_secret" "sql_admin_login" {
-  name         = "sql-admin-login"
-  value        = var.sql_admin_login
-  key_vault_id = azurerm_key_vault.this.id
-  depends_on   = [azurerm_role_assignment.kv_deployer]
-}
-
-resource "azurerm_key_vault_secret" "sql_jdbc_url" {
-  name         = "sql-jdbc-url"
-  value        = "jdbc:sqlserver://${azurerm_mssql_server.this.fully_qualified_domain_name}:1433;database=${azurerm_mssql_database.source.name};encrypt=true;trustServerCertificate=false"
-  key_vault_id = azurerm_key_vault.this.id
-  depends_on   = [azurerm_role_assignment.kv_deployer]
+  principal_id         = azurerm_databricks_access_connector.uc[0].identity[0].principal_id
 }

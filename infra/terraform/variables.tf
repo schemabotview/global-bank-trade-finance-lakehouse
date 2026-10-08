@@ -3,6 +3,43 @@ variable "subscription_id" {
   type        = string
 }
 
+variable "resource_group_name" {
+  description = "Existing resource group to deploy into. Leave empty to create rg-<project>-<environment> (needs subscription-scope write)."
+  type        = string
+  default     = ""
+}
+
+variable "storage_account_name" {
+  description = "Existing ADLS Gen2 account (HNS enabled) to use for landing + lakehouse. Leave empty to create one. An adopted account must already have both containers and a Unity Catalog storage credential over them."
+  type        = string
+  default     = ""
+}
+
+variable "sql_server_name" {
+  description = "Existing Azure SQL server holding the synthetic source. Leave empty to create one; when set, sql_admin_password is required."
+  type        = string
+  default     = ""
+}
+
+variable "sql_database_name" {
+  description = "Database on the SQL server that holds the tf.* / ctl.* schemas."
+  type        = string
+  default     = "tradefin_source"
+}
+
+variable "sql_admin_password" {
+  description = "Administrator password for an ADOPTED SQL server. Ignored when this module creates the server (a random password is generated and stored in Key Vault instead)."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "databricks_workspace_name" {
+  description = "Existing Databricks workspace (premium, Unity Catalog enabled). Leave empty to create one, which provisions a managed resource group at subscription scope."
+  type        = string
+  default     = ""
+}
+
 variable "location" {
   description = "Azure region."
   type        = string

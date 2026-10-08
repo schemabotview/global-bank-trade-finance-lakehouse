@@ -1,17 +1,17 @@
 output "resource_group" {
-  value = azurerm_resource_group.this.name
+  value = local.rg_name
 }
 
 output "storage_account" {
-  value = azurerm_storage_account.lake.name
+  value = local.sa_name
 }
 
 output "landing_root" {
-  value = "abfss://landing@${azurerm_storage_account.lake.name}.dfs.core.windows.net"
+  value = "abfss://landing@${local.sa_name}.dfs.core.windows.net"
 }
 
 output "lakehouse_root" {
-  value = "abfss://lakehouse@${azurerm_storage_account.lake.name}.dfs.core.windows.net"
+  value = "abfss://lakehouse@${local.sa_name}.dfs.core.windows.net"
 }
 
 output "key_vault" {
@@ -27,11 +27,11 @@ output "key_vault_uri" {
 }
 
 output "sql_server_fqdn" {
-  value = azurerm_mssql_server.this.fully_qualified_domain_name
+  value = local.sql_fqdn
 }
 
 output "sql_database" {
-  value = azurerm_mssql_database.source.name
+  value = local.sql_db
 }
 
 output "data_factory" {
@@ -39,10 +39,10 @@ output "data_factory" {
 }
 
 output "databricks_workspace_url" {
-  value = "https://${azurerm_databricks_workspace.this.workspace_url}"
+  value = local.create_dbx ? "https://${azurerm_databricks_workspace.this[0].workspace_url}" : "https://${data.azurerm_databricks_workspace.existing[0].workspace_url}"
 }
 
 output "databricks_access_connector_id" {
-  description = "Use as the Azure Managed Identity access connector ID when creating the Unity Catalog storage credential."
-  value       = azurerm_databricks_access_connector.uc.id
+  description = "Use as the Azure Managed Identity access connector ID when creating the Unity Catalog storage credential. Null when an existing workspace was adopted (it brings its own)."
+  value       = local.create_dbx ? azurerm_databricks_access_connector.uc[0].id : null
 }

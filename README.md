@@ -22,7 +22,17 @@ scripts/              deploy / load helpers
 
 Prerequisites: `az` (logged in), `terraform` ≥ 1.6, `jq`, `sqlcmd`, Python 3.10+ with `pyodbc` + ODBC Driver 18, Databricks CLI.
 
+> **macOS / Apple Silicon.** The driver and tools come from Microsoft's tap, which Homebrew requires you to trust:
+> `brew tap microsoft/mssql-release https://github.com/Microsoft/homebrew-mssql-release && brew trust microsoft/mssql-release && HOMEBREW_ACCEPT_EULA=Y brew install msodbcsql18 mssql-tools18`.
+> Two environment variables are then needed, or every connection fails:
+> `DYLD_LIBRARY_PATH=/opt/homebrew/opt/openssl@3/lib` (else the driver reports *"OpenSSL library could not be loaded"*)
+> and, if `python` comes from conda rather than Homebrew, `ODBCSYSINI=/opt/homebrew/etc` (else `pyodbc.drivers()` is empty
+> because conda's unixODBC reads a different `odbcinst.ini`).
+> Azure CLI auth also needs real MFA: ARM **writes** are refused for accounts whose only factor is an email one-time
+> passcode (`RequestDisallowedByAzure ... MFAforAzure`), even though reads and `terraform plan` succeed.
+
 1. **Infra** — `cd infra/terraform && cp terraform.tfvars.example terraform.tfvars` (set subscription and your public IP), then `terraform init && terraform apply`.
+   Creating the resource group needs subscription-scope write; where that is withheld, set `resource_group_name` to a group you already have Contributor **and** User Access Administrator on (the four role assignments need the latter).
 2. **Source data (day 1)** — `export SQL_PASSWORD=$(az keyvault secret show --vault-name <kv> -n sql-admin-password --query value -o tsv)` then `scripts/load_source.sh 1`.
    Dry run without a database: `python generator/generate_data.py --day 1 --target csv`.
 3. **ADF** — `az extension add --name datafactory`, then `scripts/deploy_adf.sh`, then run `pl_ingest_sqldb_to_landing` in the ADF portal. Expect Parquet under `landing/sqldb/<TABLE>/ingest_date=…/batch_id=…/` and rows in `ctl.batch_audit`.

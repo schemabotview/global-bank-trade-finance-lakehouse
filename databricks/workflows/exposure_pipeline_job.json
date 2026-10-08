@@ -2,64 +2,129 @@
   "name": "tradefin-exposure-pipeline",
   "max_concurrent_runs": 1,
   "parameters": [
-    { "name": "catalog", "default": "tradefin" },
-    { "name": "landing_root", "default": "__LANDING_ROOT__" },
-    { "name": "lakehouse_root", "default": "__LAKEHOUSE_ROOT__" },
-    { "name": "as_of_date", "default": "2025-06-30" },
-    { "name": "secret_scope", "default": "tradefin" }
-  ],
-  "job_clusters": [
     {
-      "job_cluster_key": "etl",
-      "new_cluster": {
-        "spark_version": "15.4.x-scala2.12",
-        "node_type_id": "Standard_DS3_v2",
-        "num_workers": 1,
-        "data_security_mode": "SINGLE_USER"
-      }
+      "name": "catalog",
+      "default": "tradefin"
+    },
+    {
+      "name": "landing_root",
+      "default": "__LANDING_ROOT__"
+    },
+    {
+      "name": "lakehouse_root",
+      "default": "__LAKEHOUSE_ROOT__"
+    },
+    {
+      "name": "as_of_date",
+      "default": "2025-06-30"
+    },
+    {
+      "name": "secret_scope",
+      "default": "tradefin"
     }
   ],
   "tasks": [
     {
       "task_key": "setup",
-      "job_cluster_key": "etl",
-      "notebook_task": { "notebook_path": "__NOTEBOOK_ROOT__/00_setup", "base_parameters": { "catalog": "{{job.parameters.catalog}}", "lakehouse_root": "{{job.parameters.lakehouse_root}}" } }
+      "notebook_task": {
+        "notebook_path": "__NOTEBOOK_ROOT__/00_setup",
+        "base_parameters": {
+          "catalog": "{{job.parameters.catalog}}",
+          "lakehouse_root": "{{job.parameters.lakehouse_root}}"
+        }
+      }
     },
     {
       "task_key": "bronze_load",
-      "depends_on": [ { "task_key": "setup" } ],
-      "job_cluster_key": "etl",
-      "notebook_task": { "notebook_path": "__NOTEBOOK_ROOT__/10_bronze_load", "base_parameters": { "catalog": "{{job.parameters.catalog}}", "landing_root": "{{job.parameters.landing_root}}" } }
+      "depends_on": [
+        {
+          "task_key": "setup"
+        }
+      ],
+      "notebook_task": {
+        "notebook_path": "__NOTEBOOK_ROOT__/10_bronze_load",
+        "base_parameters": {
+          "catalog": "{{job.parameters.catalog}}",
+          "landing_root": "{{job.parameters.landing_root}}"
+        }
+      }
     },
     {
       "task_key": "silver_clean",
-      "depends_on": [ { "task_key": "bronze_load" } ],
-      "job_cluster_key": "etl",
-      "notebook_task": { "notebook_path": "__NOTEBOOK_ROOT__/20_silver_clean", "base_parameters": { "catalog": "{{job.parameters.catalog}}" } }
+      "depends_on": [
+        {
+          "task_key": "bronze_load"
+        }
+      ],
+      "notebook_task": {
+        "notebook_path": "__NOTEBOOK_ROOT__/20_silver_clean",
+        "base_parameters": {
+          "catalog": "{{job.parameters.catalog}}"
+        }
+      }
     },
     {
       "task_key": "silver_scd2_party",
-      "depends_on": [ { "task_key": "bronze_load" } ],
-      "job_cluster_key": "etl",
-      "notebook_task": { "notebook_path": "__NOTEBOOK_ROOT__/30_silver_scd2_party", "base_parameters": { "catalog": "{{job.parameters.catalog}}" } }
+      "depends_on": [
+        {
+          "task_key": "bronze_load"
+        }
+      ],
+      "notebook_task": {
+        "notebook_path": "__NOTEBOOK_ROOT__/30_silver_scd2_party",
+        "base_parameters": {
+          "catalog": "{{job.parameters.catalog}}"
+        }
+      }
     },
     {
       "task_key": "gold_dims",
-      "depends_on": [ { "task_key": "silver_clean" }, { "task_key": "silver_scd2_party" } ],
-      "job_cluster_key": "etl",
-      "notebook_task": { "notebook_path": "__NOTEBOOK_ROOT__/40_gold_dims", "base_parameters": { "catalog": "{{job.parameters.catalog}}" } }
+      "depends_on": [
+        {
+          "task_key": "silver_clean"
+        },
+        {
+          "task_key": "silver_scd2_party"
+        }
+      ],
+      "notebook_task": {
+        "notebook_path": "__NOTEBOOK_ROOT__/40_gold_dims",
+        "base_parameters": {
+          "catalog": "{{job.parameters.catalog}}"
+        }
+      }
     },
     {
       "task_key": "gold_fact_exposure",
-      "depends_on": [ { "task_key": "gold_dims" } ],
-      "job_cluster_key": "etl",
-      "notebook_task": { "notebook_path": "__NOTEBOOK_ROOT__/50_gold_fact_exposure", "base_parameters": { "catalog": "{{job.parameters.catalog}}", "as_of_date": "{{job.parameters.as_of_date}}" } }
+      "depends_on": [
+        {
+          "task_key": "gold_dims"
+        }
+      ],
+      "notebook_task": {
+        "notebook_path": "__NOTEBOOK_ROOT__/50_gold_fact_exposure",
+        "base_parameters": {
+          "catalog": "{{job.parameters.catalog}}",
+          "as_of_date": "{{job.parameters.as_of_date}}"
+        }
+      }
     },
     {
       "task_key": "dq_reconcile",
-      "depends_on": [ { "task_key": "gold_fact_exposure" } ],
-      "job_cluster_key": "etl",
-      "notebook_task": { "notebook_path": "__NOTEBOOK_ROOT__/60_dq_reconcile", "base_parameters": { "catalog": "{{job.parameters.catalog}}", "landing_root": "{{job.parameters.landing_root}}", "as_of_date": "{{job.parameters.as_of_date}}", "secret_scope": "{{job.parameters.secret_scope}}" } }
+      "depends_on": [
+        {
+          "task_key": "gold_fact_exposure"
+        }
+      ],
+      "notebook_task": {
+        "notebook_path": "__NOTEBOOK_ROOT__/60_dq_reconcile",
+        "base_parameters": {
+          "catalog": "{{job.parameters.catalog}}",
+          "landing_root": "{{job.parameters.landing_root}}",
+          "as_of_date": "{{job.parameters.as_of_date}}",
+          "secret_scope": "{{job.parameters.secret_scope}}"
+        }
+      }
     }
   ]
 }

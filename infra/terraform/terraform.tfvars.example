@@ -1,4 +1,30 @@
-subscription_id     = "00000000-0000-0000-0000-000000000000"
-location            = "uksouth"
-environment         = "dev"
-client_ip_addresses = ["203.0.113.10"] # your public IP, to run the data generator
+subscription_id = "00000000-0000-0000-0000-000000000000"
+location        = "uksouth"
+environment     = "dev"
+
+# Every *_name below follows one contract: empty => this module creates the resource,
+# set => it adopts the existing one. Creating everything needs subscription-scope write;
+# governed subscriptions typically grant Contributor inside a vended resource group only.
+
+# Needs subscription-scope write to create. Set to a group you have Contributor AND
+# User Access Administrator on (the role assignments need the latter).
+resource_group_name = ""
+
+# Must be ADLS Gen2 (hierarchical namespace). An adopted account is expected to already
+# carry the `landing` and `lakehouse` containers and a Unity Catalog storage credential.
+storage_account_name = ""
+
+# When sql_server_name is set, sql_admin_password is required. When empty, a random
+# password is generated and written to Key Vault instead.
+sql_server_name    = ""
+sql_database_name  = "tradefin_source"
+sql_admin_login    = "sqladmin"
+sql_admin_password = ""
+
+# Premium SKU with Unity Catalog enabled. Creating one provisions a managed resource
+# group at subscription scope, which a governed subscription may refuse.
+databricks_workspace_name = ""
+
+# Public IPs allowed through the SQL firewall, so you can run the generator.
+# Only applied to a server this module creates.
+client_ip_addresses = ["203.0.113.10"]
