@@ -1,0 +1,106 @@
+{
+  "name": "pl_ingest_sqldb_to_landing",
+  "properties": {
+    "description": "Metadata-driven ingestion: ctl.ingestion_config drives full / watermark / append loads from Azure SQL to ADLS Gen2 landing as Parquet. Watermarks advance only after a successful copy.",
+    "activities": [
+      {
+        "name": "lkp_config",
+        "type": "Lookup",
+        "policy": { "timeout": "0.00:10:00", "retry": 2, "retryIntervalInSeconds": 30 },
+        "typeProperties": {
+          "source": {
+            "type": "AzureSqlSource",
+            "sqlReaderQuery": "SELECT c.table_name, c.source_schema, c.load_type, c.watermark_column, c.watermark_type, w.last_watermark FROM ctl.ingestion_config c JOIN ctl.watermark_control w ON w.table_name = c.table_name WHERE c.is_active = 1",
+            "queryTimeout": "02:00:00"
+          },
+          "dataset": { "referenceName": "ds_sql_generic", "type": "DatasetReference" },
+          "firstRowOnly": false
+        }
+      },
+      {
+        "name": "foreach_table",
+        "type": "ForEach",
+        "dependsOn": [ { "activity": "lkp_config", "dependencyConditions": [ "Succeeded" ] } ],
+        "typeProperties": {
+          "items": { "value": "@activity('lkp_config').output.value", "type": "Expression" },
+          "isSequential": false,
+          "batchCount": 4,
+          "activities": [
+            {
+              "name": "lkp_new_watermark",
+              "type": "Lookup",
+              "policy": { "timeout": "0.00:10:00", "retry": 2, "retryIntervalInSeconds": 30 },
+              "typeProperties": {
+                "source": {
+                  "type": "AzureSqlSource",
+                  "sqlReaderQuery": {
+                    "value": "@if(equals(item().load_type, 'F'), 'SELECT ''n/a'' AS new_watermark', concat('SELECT ISNULL(CONVERT(VARCHAR(40), MAX(', item().watermark_column, '), 121), ''', item().last_watermark, ''') AS new_watermark FROM ', item().source_schema, '.', item().table_name))",
+                    "type": "Expression"
+                  }
+                },
+                "dataset": { "referenceName": "ds_sql_generic", "type": "DatasetReference" },
+                "firstRowOnly": true
+              }
+            },
+            {
+              "name": "copy_to_landing",
+              "type": "Copy",
+              "dependsOn": [ { "activity": "lkp_new_watermark", "dependencyConditions": [ "Succeeded" ] } ],
+              "policy": { "timeout": "0.02:00:00", "retry": 3, "retryIntervalInSeconds": 60 },
+              "typeProperties": {
+                "source": {
+                  "type": "AzureSqlSource",
+                  "sqlReaderQuery": {
+                    "value": "@if(equals(item().load_type, 'F'), concat('SELECT * FROM ', item().source_schema, '.', item().table_name), concat('SELECT * FROM ', item().source_schema, '.', item().table_name, ' WHERE ', item().watermark_column, ' > CAST(''', item().last_watermark, ''' AS ', item().watermark_type, ') AND ', item().watermark_column, ' <= CAST(''', activity('lkp_new_watermark').output.firstRow.new_watermark, ''' AS ', item().watermark_type, ')'))",
+                    "type": "Expression"
+                  },
+                  "queryTimeout": "02:00:00",
+                  "additionalColumns": [
+                    { "name": "ingested_at", "value": { "value": "@utcnow()", "type": "Expression" } },
+                    { "name": "source_system", "value": "trade_finance_app" }
+                  ]
+                },
+                "sink": {
+                  "type": "ParquetSink",
+                  "storeSettings": { "type": "AzureBlobFSWriteSettings" },
+                  "formatSettings": { "type": "ParquetWriteSettings" }
+                },
+                "enableStaging": false
+              },
+              "inputs": [ { "referenceName": "ds_sql_generic", "type": "DatasetReference" } ],
+              "outputs": [
+                {
+                  "referenceName": "ds_landing_parquet",
+                  "type": "DatasetReference",
+                  "parameters": {
+                    "folder_path": {
+                      "value": "@concat('sqldb/', item().table_name, '/ingest_date=', formatDateTime(utcnow(), 'yyyy-MM-dd'), '/batch_id=', pipeline().RunId)",
+                      "type": "Expression"
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "name": "sp_complete_load",
+              "type": "SqlServerStoredProcedure",
+              "dependsOn": [ { "activity": "copy_to_landing", "dependencyConditions": [ "Succeeded" ] } ],
+              "policy": { "timeout": "0.00:10:00", "retry": 2, "retryIntervalInSeconds": 30 },
+              "typeProperties": {
+                "storedProcedureName": "ctl.usp_complete_load",
+                "storedProcedureParameters": {
+                  "table_name": { "value": { "value": "@item().table_name", "type": "Expression" }, "type": "String" },
+                  "batch_id": { "value": { "value": "@pipeline().RunId", "type": "Expression" }, "type": "String" },
+                  "rows_copied": { "value": { "value": "@activity('copy_to_landing').output.rowsCopied", "type": "Expression" }, "type": "Int64" },
+                  "new_watermark": { "value": { "value": "@activity('lkp_new_watermark').output.firstRow.new_watermark", "type": "Expression" }, "type": "String" }
+                }
+              },
+              "linkedServiceName": { "referenceName": "ls_sqldb", "type": "LinkedServiceReference" }
+            }
+          ]
+        }
+      }
+    ],
+    "annotations": [ "tradefin", "ingestion" ]
+  }
+}

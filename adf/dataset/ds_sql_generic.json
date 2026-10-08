@@ -1,0 +1,8 @@
+{
+  "name": "ds_sql_generic",
+  "properties": {
+    "type": "AzureSqlTable",
+    "linkedServiceName": { "referenceName": "ls_sqldb", "type": "LinkedServiceReference" },
+    "annotations": [ "Queries supply the SQL, so no table is bound here." ]
+  }
+}
